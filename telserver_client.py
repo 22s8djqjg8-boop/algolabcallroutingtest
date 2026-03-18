@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TelServer 테스트 클라이언트 v2.0
-- CMD_LOGIN: TelServer 로그인
-- CMD_RECEIVE/CMD_PICKUP 브로드캐스트 수신
-- LIB_CALL_TRANSFER: 돌려주기(전환) 요청
-- LIB_CALL_REDIRECT: 리다이렉트 요청
-- LIB_CALL_MAKECALL: 전화 걸기 요청
-- LIB_CALL_INTERNAL: 내선 전화 요청
-- LIB_CALL_RESET: 통화 상태 초기화
-- LIB_ABSENCE_CHECK: 부재중 체크
+TelServer 테스트 클라이언트 v3.0
 
-프로토콜:
-  인코딩: euc-kr (Korean)
+프로토콜 (IL 디컴파일 기반 확정):
+  인코딩: euc-kr
   메시지 구분자: $ (0x24)
   필드 구분자: | (파이프)
-  포맷: COMMAND|param1|param2|...|$
+  포맷: COMMAND|param1|param2|...|
+
+파라미터 포맷 (LG070CallEvent IL 분석 결과):
+  LIB_CALL_TRANSFER|보내는내선|CID|받는내선|    (callType=2)
+  LIB_CALL_REDIRECT|받는내선|CID|보내는내선|    (callType=3)
+  LIB_CALL_MAKECALL|내선|전화번호|국선그룹|     (callType=0)
+  LIB_CALL_INTERNAL|내선|대상내선|CID|          (callType=1)
+
+  parseData[0] = 첫번째 파라미터
+  parseData[1] = 두번째 파라미터
+  parseData[2] = 세번째 파라미터
 
 사용법:
-  python telserver_client.py                    # 기본 (수신 모니터링)
+  python telserver_client.py
   python telserver_client.py --host 211.180.158.71 --port 4232
   python telserver_client.py --telno 3566 --name "테스트PC"
 """
@@ -80,7 +82,6 @@ class TelServerClient:
             self.log_file.flush()
 
     def connect(self):
-        """TelServer에 TCP 소켓 연결"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)
@@ -95,19 +96,11 @@ class TelServerClient:
             self.connected = False
             return False
 
-    def send_message(self, command, *params):
-        """
-        TelServer에 메시지 전송
-        포맷: COMMAND|param1|param2|...|$
-        """
+    def send_raw(self, message):
+        """raw 문자열을 euc-kr로 인코딩하여 전송"""
         if not self.connected or not self.sock:
-            self.log("연결되지 않음. 먼저 connect() 필요", C.RED)
+            self.log("연결되지 않음", C.RED)
             return False
-
-        # 메시지 조립
-        parts = [command] + list(params)
-        message = FIELD_SEP.join(parts) + FIELD_SEP
-
         try:
             raw = message.encode(ENCODING)
             self.sock.sendall(raw)
@@ -118,63 +111,90 @@ class TelServerClient:
             self.connected = False
             return False
 
+    def send_command(self, command, *params):
+        """커맨드|파라미터1|파라미터2|...| 형태로 전송"""
+        parts = [command] + list(params)
+        message = FIELD_SEP.join(parts) + FIELD_SEP
+        return self.send_raw(message)
+
     def login(self):
-        """CMD_LOGIN 전송"""
-        # 포맷: CMD_LOGIN|IP|내선번호|사용자명|
+        """CMD_LOGIN|IP|내선번호|이름|"""
         local_ip = self._get_local_ip()
-        return self.send_message("CMD_LOGIN", local_ip, self.telno, self.name)
+        return self.send_command("CMD_LOGIN", local_ip, self.telno, self.name)
 
-    def transfer_call(self, from_ext, to_ext):
-        """
-        LIB_CALL_TRANSFER: 돌려주기(전환) 요청
-        현재 from_ext에 연결된 통화를 to_ext로 전환
-        """
-        self.log(f"돌려주기 요청: {from_ext} → {to_ext}", C.BOLD + C.YELLOW)
-        return self.send_message("LIB_CALL_TRANSFER", from_ext, to_ext)
+    # ── 통화 제어 (IL 분석 기반 정확한 파라미터) ──
 
-    def redirect_call(self, from_ext, to_ext):
+    def transfer_call(self, from_ext, cid, to_ext):
         """
-        LIB_CALL_REDIRECT: 리다이렉트 요청
-        링 중인 콜을 다른 내선으로 리다이렉트
-        """
-        self.log(f"리다이렉트 요청: {from_ext} → {to_ext}", C.BOLD + C.YELLOW)
-        return self.send_message("LIB_CALL_REDIRECT", from_ext, to_ext)
+        돌려주기 (callType=2)
+        LIB_CALL_TRANSFER|보내는내선|CID|받는내선|
 
-    def make_call(self, phone_number, ring_group=""):
+        LG070CallEvent에서:
+          parseData[0] = from_ext → Disconnected 처리
+          parseData[1] = cid → 상태정보용
+          parseData[2] = to_ext → GetIndexLG070()으로 채널 찾기 & Transfer() 실행
         """
-        LIB_CALL_MAKECALL: PBX를 통해 전화 걸기
-        또는 CMD_MAKECALL|전화번호 (국선그룹)|
-        """
-        if ring_group:
-            self.log(f"전화 걸기: {phone_number} (그룹: {ring_group})", C.BOLD + C.YELLOW)
-            return self.send_message("LIB_CALL_MAKECALL", self.telno, phone_number, ring_group)
-        else:
-            self.log(f"전화 걸기: {phone_number}", C.BOLD + C.YELLOW)
-            return self.send_message("LIB_CALL_MAKECALL", self.telno, phone_number)
+        self.log(f"돌려주기: {from_ext} → {to_ext} (CID:{cid})", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_CALL_TRANSFER", from_ext, cid, to_ext)
 
-    def internal_call(self, target_ext):
+    def redirect_call(self, to_ext, cid, from_ext):
         """
-        LIB_CALL_INTERNAL: 내선 전화
-        """
-        self.log(f"내선 전화: → {target_ext}", C.BOLD + C.YELLOW)
-        return self.send_message("LIB_CALL_INTERNAL", self.telno, target_ext)
+        리다이렉트 (callType=3)
+        LIB_CALL_REDIRECT|받는내선|CID|보내는내선|
 
-    def reset_call(self):
+        LG070CallEvent에서:
+          parseData[0] = to_ext → Offering, Pickup() 실행
+          parseData[1] = cid → 상태정보용
+          parseData[2] = from_ext → Disconnected 처리
         """
-        LIB_CALL_RESET: 통화 상태 초기화
-        """
-        self.log(f"통화 상태 초기화 요청", C.BOLD + C.YELLOW)
-        return self.send_message("LIB_CALL_RESET", self.telno)
+        self.log(f"리다이렉트: {from_ext} → {to_ext} (CID:{cid})", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_CALL_REDIRECT", to_ext, cid, from_ext)
 
-    def absence_check(self):
+    def make_call(self, ext, phone_number, ring_group=""):
         """
-        LIB_ABSENCE_CHECK: 부재중 체크
+        전화 걸기 (callType=0)
+        LIB_CALL_MAKECALL|내선|전화번호|국선그룹|
+
+        LG070CallEvent에서:
+          parseData[0] = ext → GetIndexLG070()으로 채널 찾기 & Click2Call
+          parseData[1] = phone_number → 대상 번호
+          parseData[2] = ring_group → 국선그룹
         """
-        self.log(f"부재중 체크 요청", C.BOLD + C.YELLOW)
-        return self.send_message("LIB_ABSENCE_CHECK", self.telno)
+        self.log(f"전화 걸기: {ext} → {phone_number}", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_CALL_MAKECALL", ext, phone_number, ring_group)
+
+    def internal_call(self, ext, target_ext):
+        """
+        내선 전화 (callType=1)
+        LIB_CALL_INTERNAL|내선|대상내선|
+
+        LG070CallEvent에서:
+          parseData[0] = ext → InnerRingback 상태
+          parseData[1] = target_ext → Click2Call
+          parseData[2] = (있으면) 추가정보
+        """
+        self.log(f"내선 전화: {ext} → {target_ext}", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_CALL_INTERNAL", ext, target_ext)
+
+    def reset_call(self, ext):
+        """
+        통화 상태 초기화
+        LIB_CALL_RESET|내선|
+        """
+        self.log(f"통화 초기화: {ext}", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_CALL_RESET", ext)
+
+    def absence_check(self, ext):
+        """
+        부재중 체크
+        LIB_ABSENCE_CHECK|내선|
+        """
+        self.log(f"부재중 체크: {ext}", C.BOLD + C.YELLOW)
+        return self.send_command("LIB_ABSENCE_CHECK", ext)
+
+    # ── 수신 처리 ──
 
     def recv_loop(self):
-        """수신 루프 - TelServer 브로드캐스트 메시지 수신"""
         buffer = b""
         while self.running and self.connected:
             try:
@@ -186,12 +206,10 @@ class TelServerClient:
 
                 buffer += data
 
-                # $ 구분자로 메시지 분리
                 while True:
                     delim_bytes = DELIMITER.encode(ENCODING)
                     idx = buffer.find(delim_bytes)
                     if idx == -1:
-                        # \n 구분자도 체크 (일부 메시지)
                         idx = buffer.find(b'\n')
                         if idx == -1:
                             break
@@ -220,19 +238,16 @@ class TelServerClient:
                 break
 
     def _handle_message(self, msg):
-        """수신 메시지 처리 및 표시"""
         fields = msg.split(FIELD_SEP)
         cmd = fields[0] if fields else ""
 
         if cmd == "CMD_RECEIVE":
-            # 전화 수신 브로드캐스트
             cid = fields[1] if len(fields) > 1 else "?"
             div = fields[2] if len(fields) > 2 else "?"
             seq = fields[3] if len(fields) > 3 else "?"
             self.log(f"수신 <<< {C.BOLD}전화수신{C.RESET}{C.GREEN}  CID:{cid}  내선:{div}  SEQ:{seq}", C.GREEN)
 
         elif cmd == "CMD_PICKUP":
-            # 당겨받기 브로드캐스트
             ext = fields[1] if len(fields) > 1 else "?"
             cid = fields[2] if len(fields) > 2 else "?"
             div = fields[3] if len(fields) > 3 else "?"
@@ -245,17 +260,16 @@ class TelServerClient:
         elif cmd == "TRS_RECEIVE":
             self.log(f"수신 <<< TRS: {msg}", C.DIM)
 
-        elif "SVR_LOGIN_SUCCESS" in msg or "SUCCESS" in msg:
-            self.log(f"수신 <<< 로그인 성공: {msg}", C.GREEN + C.BOLD)
+        elif "SUCCESS" in msg.upper():
+            self.log(f"수신 <<< {C.BOLD}성공: {msg}{C.RESET}", C.GREEN + C.BOLD)
 
-        elif "SVR_LOGIN_FAIL" in msg or "FAIL" in msg:
-            self.log(f"수신 <<< 로그인 실패: {msg}", C.RED + C.BOLD)
+        elif "FAIL" in msg.upper():
+            self.log(f"수신 <<< {C.BOLD}실패: {msg}{C.RESET}", C.RED + C.BOLD)
 
         else:
             self.log(f"수신 <<< {msg}", C.DIM)
 
     def _get_local_ip(self):
-        """로컬 IP 주소 획득"""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -266,7 +280,6 @@ class TelServerClient:
             return "192.168.0.100"
 
     def start(self):
-        """연결 및 수신 루프 시작"""
         if self.log_to_file:
             os.makedirs(LOG_DIR, exist_ok=True)
             fname = f"{LOG_DIR}/telserver_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -285,7 +298,6 @@ class TelServerClient:
         return False
 
     def stop(self):
-        """클라이언트 종료"""
         self.running = False
         self.connected = False
         if self.sock:
@@ -300,28 +312,40 @@ class TelServerClient:
 # 인터랙티브 모드
 # ============================================================
 def interactive_mode(client):
-    """대화형 명령 모드"""
     help_text = f"""
-{C.BOLD}=== TelServer 테스트 클라이언트 명령어 ==={C.RESET}
-
-{C.CYAN}모니터링:{C.RESET}
-  (수신 메시지는 자동 표시됩니다)
+{C.BOLD}=== TelServer 테스트 클라이언트 v3.0 ==={C.RESET}
+{C.DIM}IL 디컴파일 기반 정확한 파라미터 포맷{C.RESET}
 
 {C.CYAN}통화 제어:{C.RESET}
-  {C.BOLD}transfer <from> <to>{C.RESET}  돌려주기 (예: transfer 3566 3567)
-  {C.BOLD}redirect <from> <to>{C.RESET}  리다이렉트 (예: redirect 3566 3565)
-  {C.BOLD}call <번호>{C.RESET}           전화 걸기 (예: call 01012345678)
-  {C.BOLD}internal <내선>{C.RESET}       내선 전화 (예: internal 3567)
-  {C.BOLD}reset{C.RESET}                통화 상태 초기화
-  {C.BOLD}absence{C.RESET}              부재중 체크
+  {C.BOLD}transfer <보내는내선> <CID> <받는내선>{C.RESET}
+      돌려주기. 예: transfer 2785 01012345678 8955
+      LIB_CALL_TRANSFER|2785|01012345678|8955|
+
+  {C.BOLD}redirect <받는내선> <CID> <보내는내선>{C.RESET}
+      리다이렉트. 예: redirect 8955 01012345678 2785
+      LIB_CALL_REDIRECT|8955|01012345678|2785|
+
+  {C.BOLD}call <내선> <전화번호> [국선그룹]{C.RESET}
+      전화 걸기. 예: call 2785 01012345678
+      LIB_CALL_MAKECALL|2785|01012345678||
+
+  {C.BOLD}internal <내선> <대상내선>{C.RESET}
+      내선 전화. 예: internal 2785 8955
+
+  {C.BOLD}reset <내선>{C.RESET}
+      통화 상태 초기화. 예: reset 2785
+
+  {C.BOLD}absence <내선>{C.RESET}
+      부재중 체크. 예: absence 2785
 
 {C.CYAN}디버깅:{C.RESET}
-  {C.BOLD}raw <메시지>{C.RESET}          직접 메시지 전송 (예: raw LIB_CALL_TRANSFER|3566|3567|)
-  {C.BOLD}login{C.RESET}               재로그인
+  {C.BOLD}raw <메시지>{C.RESET}
+      직접 raw 전송. 예: raw LIB_CALL_TRANSFER|2785|01012345678|8955|
+
+  {C.BOLD}login{C.RESET}            재로그인
 
 {C.CYAN}기타:{C.RESET}
-  {C.BOLD}help{C.RESET}                이 도움말
-  {C.BOLD}quit{C.RESET}                종료
+  {C.BOLD}help{C.RESET}  도움말     {C.BOLD}quit{C.RESET}  종료
 """
     print(help_text)
 
@@ -334,56 +358,59 @@ def interactive_mode(client):
             parts = cmd_input.split()
             cmd = parts[0].lower()
 
-            if cmd == "quit" or cmd == "exit" or cmd == "q":
+            if cmd in ("quit", "exit", "q"):
                 break
 
-            elif cmd == "help" or cmd == "h":
+            elif cmd in ("help", "h"):
                 print(help_text)
 
-            elif cmd == "transfer" or cmd == "t":
+            elif cmd in ("transfer", "t"):
+                if len(parts) >= 4:
+                    client.transfer_call(parts[1], parts[2], parts[3])
+                elif len(parts) == 3:
+                    # CID 생략 시 빈값
+                    client.transfer_call(parts[1], "", parts[2])
+                else:
+                    print(f"  사용법: transfer <보내는내선> <CID> <받는내선>")
+                    print(f"  예시:   transfer 2785 01012345678 8955")
+                    print(f"  CID 생략: transfer 2785 8955")
+
+            elif cmd in ("redirect", "r"):
+                if len(parts) >= 4:
+                    client.redirect_call(parts[1], parts[2], parts[3])
+                elif len(parts) == 3:
+                    client.redirect_call(parts[1], "", parts[2])
+                else:
+                    print(f"  사용법: redirect <받는내선> <CID> <보내는내선>")
+
+            elif cmd in ("call", "c"):
                 if len(parts) >= 3:
-                    client.transfer_call(parts[1], parts[2])
+                    ring_group = parts[3] if len(parts) >= 4 else ""
+                    client.make_call(parts[1], parts[2], ring_group)
                 else:
-                    print(f"  사용법: transfer <보내는내선> <받는내선>")
-                    print(f"  예시:   transfer 3566 3567")
+                    print(f"  사용법: call <내선> <전화번호> [국선그룹]")
 
-            elif cmd == "redirect" or cmd == "r":
+            elif cmd in ("internal", "i"):
                 if len(parts) >= 3:
-                    client.redirect_call(parts[1], parts[2])
+                    client.internal_call(parts[1], parts[2])
                 else:
-                    print(f"  사용법: redirect <현재내선> <대상내선>")
-
-            elif cmd == "call" or cmd == "c":
-                if len(parts) >= 2:
-                    ring_group = parts[2] if len(parts) >= 3 else ""
-                    client.make_call(parts[1], ring_group)
-                else:
-                    print(f"  사용법: call <전화번호> [국선그룹]")
-
-            elif cmd == "internal" or cmd == "i":
-                if len(parts) >= 2:
-                    client.internal_call(parts[1])
-                else:
-                    print(f"  사용법: internal <대상내선>")
+                    print(f"  사용법: internal <내선> <대상내선>")
 
             elif cmd == "reset":
-                client.reset_call()
+                ext = parts[1] if len(parts) >= 2 else client.telno
+                client.reset_call(ext)
 
             elif cmd == "absence":
-                client.absence_check()
+                ext = parts[1] if len(parts) >= 2 else client.telno
+                client.absence_check(ext)
 
             elif cmd == "raw":
                 if len(parts) >= 2:
                     raw_msg = " ".join(parts[1:])
-                    try:
-                        raw_bytes = raw_msg.encode(ENCODING)
-                        client.sock.sendall(raw_bytes)
-                        client.log(f"RAW 송신 >>> {raw_msg}", C.CYAN)
-                    except Exception as e:
-                        client.log(f"RAW 송신 실패: {e}", C.RED)
+                    client.send_raw(raw_msg)
                 else:
-                    print(f"  사용법: raw <메시지내용>")
-                    print(f"  예시:   raw LIB_CALL_TRANSFER|3566|3567|")
+                    print(f"  사용법: raw <메시지>")
+                    print(f"  예시:   raw LIB_CALL_TRANSFER|2785|01012345678|8955|")
 
             elif cmd == "login":
                 client.login()
@@ -401,23 +428,25 @@ def interactive_mode(client):
 # Main
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description="TelServer 테스트 클라이언트")
+    parser = argparse.ArgumentParser(description="TelServer 테스트 클라이언트 v3.0")
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"TelServer IP (기본: {DEFAULT_HOST})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TelServer 포트 (기본: {DEFAULT_PORT})")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"포트 (기본: {DEFAULT_PORT})")
     parser.add_argument("--telno", default=DEFAULT_TELNO, help=f"내선번호 (기본: {DEFAULT_TELNO})")
     parser.add_argument("--name", default=DEFAULT_NAME, help=f"클라이언트명 (기본: {DEFAULT_NAME})")
     parser.add_argument("--log", action="store_true", help="파일 로깅 활성화")
     args = parser.parse_args()
 
     print(f"""
-{C.BOLD}╔══════════════════════════════════════════╗
-║   TelServer 테스트 클라이언트 v2.0       ║
-║   돌려주기/전환/모니터링                   ║
-╚══════════════════════════════════════════╝{C.RESET}
+{C.BOLD}╔══════════════════════════════════════════════╗
+║   TelServer 테스트 클라이언트 v3.0           ║
+║   IL 디컴파일 기반 정확한 파라미터 포맷       ║
+╚══════════════════════════════════════════════╝{C.RESET}
 
-  서버:    {args.host}:{args.port}
-  내선:    {args.telno}
-  이름:    {args.name}
+  서버:  {args.host}:{args.port}
+  내선:  {args.telno}
+  이름:  {args.name}
+
+  Transfer 포맷: LIB_CALL_TRANSFER|보내는내선|CID|받는내선|
 """)
 
     client = TelServerClient(args.host, args.port, args.telno, args.name, args.log)
