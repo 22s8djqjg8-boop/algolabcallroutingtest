@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=euc-kr" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<title>Centrex 전화</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: '맑은 고딕', sans-serif; background: #f0f2f5; padding: 20px; }
+
+.container { max-width: 500px; margin: 0 auto; }
+
+.card {
+    background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.card h2 { font-size: 15px; color: #333; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 2px solid #4a90d9; }
+
+/* 상태 표시 */
+.status-bar {
+    text-align: center; padding: 10px; border-radius: 8px; font-weight: bold; font-size: 14px; margin-bottom: 16px;
+}
+.status-off { background: #f5f5f5; color: #999; }
+.status-on  { background: #e8f5e9; color: #2e7d32; }
+.status-ring { background: #fff3e0; color: #e65100; animation: pulse 1s infinite; }
+.status-talk { background: #e3f2fd; color: #1565c0; }
+
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+
+/* 입력 */
+label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+input[type=text], input[type=password] {
+    width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px;
+    font-size: 14px; margin-bottom: 10px; outline: none;
+}
+input[type=text]:focus, input[type=password]:focus { border-color: #4a90d9; }
+
+.input-row { display: flex; gap: 10px; }
+.input-row > div { flex: 1; }
+
+/* 버튼 */
+.btn {
+    display: inline-block; padding: 10px 20px; border: none; border-radius: 6px;
+    font-size: 13px; font-weight: bold; cursor: pointer; transition: all 0.2s;
+    font-family: '맑은 고딕', sans-serif;
+}
+.btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-login  { background: #4a90d9; color: #fff; width: 100%; }
+.btn-logout { background: #e0e0e0; color: #333; width: 100%; }
+.btn-call   { background: #43a047; color: #fff; font-size: 16px; padding: 12px; width: 100%; }
+.btn-answer { background: #2196f3; color: #fff; flex: 1; }
+.btn-hangup { background: #e53935; color: #fff; flex: 1; }
+.btn-transfer { background: #ff9800; color: #fff; flex: 1; }
+.btn-atxfer   { background: #7b1fa2; color: #fff; flex: 1; }
+
+.btn-row { display: flex; gap: 8px; margin-top: 8px; }
+
+/* 전화번호 입력 (큰 글자) */
+.phone-input {
+    font-size: 22px !important; text-align: center; letter-spacing: 2px;
+    padding: 14px 12px !important;
+}
+
+/* 로그 */
+#logArea {
+    width: 100%; height: 140px; font-size: 11px; font-family: Consolas, monospace;
+    border: 1px solid #ddd; border-radius: 6px; padding: 8px; resize: vertical;
+    background: #fafafa;
+}
+
+.caller-info {
+    font-size: 18px; text-align: center; font-weight: bold; color: #e65100; margin: 8px 0;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ActiveX 컨트롤 (숨김) -->
+<object style="display:none;" ID="LGUBaseOpenApi" WIDTH=0 HEIGHT=0
+    CLASSID="CLSID:86019F2F-2899-4C4C-A6FE-24CFF7CD6D4C"
+    codebase="./LGUBaseOpenApi_1.0.1.21.cab#version=1,0,1,21">
+</object>
+
+<!-- 상태바 -->
+<div id="statusBar" class="status-bar status-off">연결 안됨 - 로그인하세요</div>
+
+<!-- 착신 정보 -->
+<div id="callerInfo" class="caller-info" style="display:none;"></div>
+
+<!-- 1. 로그인 -->
+<div class="card">
+    <h2>로그인</h2>
+    <div class="input-row">
+        <div>
+            <label>로그인 ID (070번호)</label>
+            <input type="text" id="loginId" value="" placeholder="070XXXXXXXX">
+        </div>
+        <div>
+            <label>비밀번호</label>
+            <input type="password" id="loginPwd" value="" placeholder="비밀번호">
+        </div>
+    </div>
+    <button class="btn btn-login" id="btnLogin" onclick="doLogin()">로그인</button>
+    <button class="btn btn-logout" id="btnLogout" onclick="doLogout()" style="display:none;">로그아웃</button>
+</div>
+
+<!-- 2. 전화 걸기 -->
+<div class="card">
+    <h2>전화 걸기</h2>
+    <input type="text" id="phoneNum" class="phone-input" placeholder="전화번호 입력" onkeypress="if(event.keyCode==13) doDial();">
+    <button class="btn btn-call" id="btnDial" onclick="doDial()" disabled>전화 걸기</button>
+    <div class="btn-row">
+        <button class="btn btn-answer" id="btnAnswer" onclick="doAnswer()" disabled>전화 받기</button>
+        <button class="btn btn-hangup" id="btnHangup" onclick="doHangup()" disabled>전화 끊기</button>
+    </div>
+</div>
+
+<!-- 3. 돌려주기 -->
+<div class="card">
+    <h2>돌려주기 (Transfer)</h2>
+    <input type="text" id="transferNum" placeholder="전환할 번호 입력">
+    <div class="btn-row">
+        <button class="btn btn-transfer" id="btnTransfer" onclick="doTransfer()" disabled>바로 전환</button>
+        <button class="btn btn-atxfer" id="btnAtxfer" onclick="doAtxfer()" disabled>통화후 전환</button>
+    </div>
+</div>
+
+<!-- 4. 로그 -->
+<div class="card">
+    <h2>이벤트 로그 <span style="float:right;font-weight:normal;font-size:11px;cursor:pointer;color:#999;" onclick="document.getElementById('logArea').value='';">지우기</span></h2>
+    <textarea id="logArea" readonly></textarea>
+</div>
+
+</div>
+
+<!-- ===================== 이벤트 핸들러 ===================== -->
+<script id="OnSendLoginResultEvent" for="LGUBaseOpenApi" event="SendLoginResultEvent(bstrLoginResult)">
+    handleLoginResult(bstrLoginResult);
+</script>
+<script id="OnSendRingEvent" for="LGUBaseOpenApi" event="SendRingEvent(bstrRingEvent)">
+    handleRingEvent(bstrRingEvent);
+</script>
+<script id="OnSendChannelListEvent" for="LGUBaseOpenApi" event="SendChannelListEvent(bstrChannelList)">
+    handleChannelList(bstrChannelList);
+</script>
+<script id="OnSendChannelOutEvent" for="LGUBaseOpenApi" event="SendChannelOutEvent(bstrChannelOut)">
+    handleChannelOut(bstrChannelOut);
+</script>
+<script id="OnSendNetworkErrorEvent" for="LGUBaseOpenApi" event="SendNetworkErrorEvent()">
+    handleNetworkError();
+</script>
+<script id="OnSendCommandResultEvent" for="LGUBaseOpenApi" event="SendCommandResultEvent(bstrResult)">
+    addLog("CMD결과: " + bstrResult);
+</script>
+<script id="OnSendCmdErrorEvent" for="LGUBaseOpenApi" event="SendCmdErrorEvent(strCmd,strEventValue)">
+    addLog("CMD오류: " + strCmd + " - " + strEventValue);
+</script>
+<script id="OnSendEtcEvent" for="LGUBaseOpenApi" event="SendEtcEvent(strEventName,strEventValue)">
+    addLog(strEventName + ": " + strEventValue);
+</script>
+
+<!-- ===================== 메인 스크립트 ===================== -->
+<script>
+var CONNECTED = false;
+var READY = false;
+var UserExten = "";
+var CurrentCaller = "";
+
+// ── ActiveX 준비 확인 ──
+window.onload = function() {
+    var ocx = document.getElementById("LGUBaseOpenApi");
+    if (ocx && ocx.readyState == 4) {
+        READY = true;
+        addLog("ActiveX 로드 완료");
+    } else if (ocx) {
+        addLog("ActiveX 로딩 중... (readyState=" + (ocx.readyState || "?") + ")");
+        // 로딩 대기
+        var check = setInterval(function() {
+            if (ocx.readyState == 4) {
+                READY = true;
+                addLog("ActiveX 로드 완료");
+                clearInterval(check);
+            }
+        }, 500);
+    } else {
+        addLog("오류: ActiveX를 찾을 수 없습니다. IE에서 열어주세요.");
+        setStatus("ActiveX 없음 - IE에서 열어주세요", "off");
+    }
+};
+
+// ── 로그인 / 로그아웃 ──
+function doLogin() {
+    if (!READY) { alert("ActiveX가 아직 로드되지 않았습니다."); return; }
+
+    var id = document.getElementById("loginId").value;
+    var pwd = document.getElementById("loginPwd").value;
+    if (!id) { alert("로그인 ID를 입력하세요"); return; }
+
+    var ocx = document.getElementById("LGUBaseOpenApi");
+    ocx.SetAutoReconnect(20);
+    ocx.SetSeedEncryption();
+    ocx.LoginServer(id, pwd, "");
+
+    addLog("로그인 시도: " + id);
+    setStatus("로그인 중...", "off");
+}
+
+function doLogout() {
+    var ocx = document.getElementById("LGUBaseOpenApi");
+    ocx.DisconnectServer();
+    CONNECTED = false;
+    setStatus("연결 안됨", "off");
+    setButtons(false);
+    addLog("로그아웃 완료");
+    document.getElementById("btnLogin").style.display = "";
+    document.getElementById("btnLogout").style.display = "none";
+}
+
+// ── 전화 기능 ──
+function doDial() {
+    if (!CONNECTED) { alert("먼저 로그인하세요"); return; }
+    var num = document.getElementById("phoneNum").value.replace(/[^0-9]/g, "");
+    if (!num) { alert("전화번호를 입력하세요"); return; }
+    document.getElementById("LGUBaseOpenApi").Click2Call(num, "", "");
+    addLog("전화 걸기: " + num);
+}
+
+function doAnswer() {
+    if (!CONNECTED) return;
+    document.getElementById("LGUBaseOpenApi").Answer();
+    addLog("전화 받기");
+}
+
+function doHangup() {
+    if (!CONNECTED) return;
+    document.getElementById("LGUBaseOpenApi").HangUp();
+    addLog("전화 끊기");
+    setStatus("대기 중 (내선: " + UserExten + ")", "on");
+    hideCallerInfo();
+}
+
+function doTransfer() {
+    if (!CONNECTED) return;
+    var num = document.getElementById("transferNum").value.replace(/[^0-9]/g, "");
+    if (!num) { alert("전환할 번호를 입력하세요"); return; }
+    document.getElementById("LGUBaseOpenApi").Transfer(num);
+    addLog("바로 전환: " + num);
+}
+
+function doAtxfer() {
+    if (!CONNECTED) return;
+    var num = document.getElementById("transferNum").value.replace(/[^0-9]/g, "");
+    if (!num) { alert("전환할 번호를 입력하세요"); return; }
+    document.getElementById("LGUBaseOpenApi").Atxfer(num);
+    addLog("통화후 전환: " + num);
+}
+
+// ── 이벤트 처리 ──
+function handleLoginResult(msg) {
+    addLog(msg);
+    var info = parseEvent(msg);
+    if (info["STATUS"] == "1") {
+        CONNECTED = true;
+        UserExten = info["EXTEN"] || "";
+        setStatus("로그인 성공! 대기 중 (내선: " + UserExten + ")", "on");
+        setButtons(true);
+        document.getElementById("btnLogin").style.display = "none";
+        document.getElementById("btnLogout").style.display = "";
+    } else {
+        var errMsg = info["MSG"] || "알 수 없는 오류";
+        setStatus("로그인 실패", "off");
+        alert("로그인 실패: " + errMsg);
+        document.getElementById("LGUBaseOpenApi").DisconnectServer();
+    }
+}
+
+function handleRingEvent(msg) {
+    addLog(msg);
+    var info = parseEvent(msg);
+    CurrentCaller = info["CALLERID"] || "알 수 없음";
+    setStatus("전화 수신 중! " + CurrentCaller, "ring");
+    showCallerInfo(CurrentCaller);
+}
+
+function handleChannelList(msg) {
+    addLog(msg);
+    setStatus("통화 중", "talk");
+}
+
+function handleChannelOut(msg) {
+    addLog(msg);
+    setStatus("대기 중 (내선: " + UserExten + ")", "on");
+    hideCallerInfo();
+}
+
+function handleNetworkError() {
+    addLog("네트워크 오류 발생!");
+    document.getElementById("LGUBaseOpenApi").DisconnectServer();
+    CONNECTED = false;
+    setStatus("연결 끊김 - 다시 로그인하세요", "off");
+    setButtons(false);
+    document.getElementById("btnLogin").style.display = "";
+    document.getElementById("btnLogout").style.display = "none";
+}
+
+// ── 유틸리티 ──
+function parseEvent(msg) {
+    var result = {};
+    var parts = msg.split("|");
+    result["EVENT"] = parts[0];
+    for (var i = 1; i < parts.length; i++) {
+        var sep = parts[i].indexOf(":");
+        if (sep > 0) {
+            result[parts[i].substring(0, sep)] = parts[i].substring(sep + 1);
+        }
+    }
+    return result;
+}
+
+function setStatus(text, type) {
+    var bar = document.getElementById("statusBar");
+    bar.innerHTML = text;
+    bar.className = "status-bar status-" + type;
+}
+
+function setButtons(enabled) {
+    document.getElementById("btnDial").disabled = !enabled;
+    document.getElementById("btnAnswer").disabled = !enabled;
+    document.getElementById("btnHangup").disabled = !enabled;
+    document.getElementById("btnTransfer").disabled = !enabled;
+    document.getElementById("btnAtxfer").disabled = !enabled;
+}
+
+function showCallerInfo(caller) {
+    var el = document.getElementById("callerInfo");
+    el.innerHTML = "수신: " + caller;
+    el.style.display = "";
+}
+function hideCallerInfo() {
+    document.getElementById("callerInfo").style.display = "none";
+}
+
+function addLog(msg) {
+    var now = new Date();
+    var ts = pad(now.getHours()) + ":" + pad(now.getMinutes()) + ":" + pad(now.getSeconds());
+    var area = document.getElementById("logArea");
+    area.value += "[" + ts + "] " + msg + "\n";
+    area.scrollTop = area.scrollHeight;
+}
+function pad(n) { return n < 10 ? "0" + n : n; }
+</script>
+
+</body>
+</html>
