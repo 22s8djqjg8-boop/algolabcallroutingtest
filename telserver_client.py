@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TelServer 테스트 클라이언트 v3.0
+TelServer 테스트 클라이언트 v3.1
+
+v3.1 변경사항:
+  - MSG:ANOTHER_LOGINED 중복 로그인 경고 처리 추가
+  - MSG: 일반 서버 메시지 파싱 추가
+  - STATUS: 통화/회선 상태 정보 파싱 추가
+  - 9필드 파이프 구분 상태 데이터 (sendTAPIEventState) 파싱 추가
 
 프로토콜 (IL 디컴파일 기반 확정):
   인코딩: euc-kr
@@ -260,6 +266,41 @@ class TelServerClient:
         elif cmd == "TRS_RECEIVE":
             self.log(f"수신 <<< TRS: {msg}", C.DIM)
 
+        # ── #3: MSG:ANOTHER_LOGINED - 중복 로그인 경고 ──
+        elif msg.startswith("MSG:ANOTHER_LOGINED"):
+            self.log(
+                f"수신 <<< {C.BOLD}[중복 로그인 경고]{C.RESET}{C.RED}"
+                f"  다른 위치에서 동일 내선({self.telno})으로 로그인됨."
+                f" 현재 세션이 비활성화될 수 있습니다.",
+                C.RED + C.BOLD,
+            )
+
+        # ── #3 확장: MSG: 일반 서버 메시지 처리 ──
+        elif msg.startswith("MSG:"):
+            body = msg[4:]
+            self.log(f"수신 <<< {C.BOLD}서버메시지:{C.RESET}{C.YELLOW}  {body}", C.YELLOW)
+
+        # ── #4: STATUS: 통화/회선 상태 정보 파싱 ──
+        elif msg.startswith("STATUS:"):
+            status_data = msg[7:]
+            self.log(f"수신 <<< {C.BOLD}상태변경:{C.RESET}{C.CYAN}  {status_data}", C.CYAN)
+
+        # ── #6: 9필드 상태 데이터 (sendTAPIEventState 등) ──
+        #   형식: {내선}|{CID}|{상태}|{국선}|{시간}|{f5}|{f6}|{f7}|{f8}|
+        elif len(fields) >= 8 and not cmd.startswith("CMD_") and not cmd.startswith("LIB_"):
+            ext_f   = fields[0] if len(fields) > 0 else "?"
+            cid_f   = fields[1] if len(fields) > 1 else "?"
+            state_f = fields[2] if len(fields) > 2 else "?"
+            line_f  = fields[3] if len(fields) > 3 else "?"
+            time_f  = fields[4] if len(fields) > 4 else "?"
+            extra   = FIELD_SEP.join(fields[5:]).rstrip(FIELD_SEP)
+            self.log(
+                f"수신 <<< {C.BOLD}통화상태{C.RESET}{C.CYAN}"
+                f"  내선:{ext_f}  CID:{cid_f}  상태:{state_f}"
+                f"  국선:{line_f}  시간:{time_f}  기타:{extra}",
+                C.CYAN,
+            )
+
         elif "SUCCESS" in msg.upper():
             self.log(f"수신 <<< {C.BOLD}성공: {msg}{C.RESET}", C.GREEN + C.BOLD)
 
@@ -313,7 +354,7 @@ class TelServerClient:
 # ============================================================
 def interactive_mode(client):
     help_text = f"""
-{C.BOLD}=== TelServer 테스트 클라이언트 v3.0 ==={C.RESET}
+{C.BOLD}=== TelServer 테스트 클라이언트 v3.1 ==={C.RESET}
 {C.DIM}IL 디컴파일 기반 정확한 파라미터 포맷{C.RESET}
 
 {C.CYAN}통화 제어:{C.RESET}
@@ -428,7 +469,7 @@ def interactive_mode(client):
 # Main
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description="TelServer 테스트 클라이언트 v3.0")
+    parser = argparse.ArgumentParser(description="TelServer 테스트 클라이언트 v3.1")
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"TelServer IP (기본: {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"포트 (기본: {DEFAULT_PORT})")
     parser.add_argument("--telno", default=DEFAULT_TELNO, help=f"내선번호 (기본: {DEFAULT_TELNO})")
@@ -438,7 +479,7 @@ def main():
 
     print(f"""
 {C.BOLD}╔══════════════════════════════════════════════╗
-║   TelServer 테스트 클라이언트 v3.0           ║
+║   TelServer 테스트 클라이언트 v3.1           ║
 ║   IL 디컴파일 기반 정확한 파라미터 포맷       ║
 ╚══════════════════════════════════════════════╝{C.RESET}
 
